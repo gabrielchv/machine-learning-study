@@ -2,14 +2,14 @@ import functions_framework
 import google.generativeai as genai
 import json
 import re
+import base64
 
-# Configure seu Gemini
-genai.configure(api_key="AIzaSyDmmLlJnE5FYsI4pFEPk5RE9bitbq7es30")
-model = genai.GenerativeModel('models/gemini-2.5-flash')
+genai.configure(api_key="GEMINI_API_KEY")
+model = genai.GenerativeModel('gemini-2.0-flash') # Versão estável multimodal
 
 @functions_framework.http
 def handle_request(request):
-    # Trata o CORS para permitir que o site acesse a Function
+    # CORS
     if request.method == 'OPTIONS':
         headers = {
             'Access-Control-Allow-Origin': '*',
@@ -20,25 +20,34 @@ def handle_request(request):
         return ('', 204, headers)
 
     headers = {'Access-Control-Allow-Origin': '*'}
-    
-    request_json = request.get_json(silent=True)
-    user_text = request_json.get("text", "")
-
-    if not user_text:
-        return (json.dumps({"error": "No text provided"}), 400, headers)
-
-    prompt = f"""
-    Extraia as tarefas do seguinte texto e retorne APENAS um JSON válido.
-    Texto: {user_text}
-    Formato: {{"tasks": [{{"title": "título", "description": "descrição"}}]}}
+    prompt = """
+    Extraia as tarefas do seguinte conteúdo e retorne APENAS um JSON válido.
+    Não inclua descrições, retorne apenas os títulos das tarefas.
+    Formato: {"tasks": [{"title": "título da tarefa"}]}
     """
 
     try:
-        response = model.generate_content(prompt)
-        # Limpa o markdown da resposta se houver
+        # Verifica se é áudio (multipart/form-data)
+        if 'audio' in request.files:
+            audio_file = request.files['audio']
+            audio_data = audio_file.read()
+            
+            # Gemini processa áudio via dicionário de bytes
+            response = model.generate_content([
+                prompt,
+                {"mime_type": "audio/webm", "data": audio_data}
+            ])
+        
+        # Caso contrário, trata como JSON de texto
+        else:
+            request_json = request.get_json(silent=True)
+            user_text = request_json.get("text", "")
+            response = model.generate_content(f"{prompt} Texto: {user_text}")
+
+        # Limpeza do JSON
         json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        if json_match:
-            return (json_match.group(0), 200, headers)
-        return (response.text, 200, headers)
+        result = json_match.group(0) if json_match else response.text
+        return (result, 200, headers)
+
     except Exception as e:
         return (json.dumps({"error": str(e)}), 500, headers)

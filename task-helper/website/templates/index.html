@@ -6,18 +6,12 @@
     <title>Task Helper AI</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Limita a altura do chat considerando o novo padding do header */
         .chat-container { height: calc(100vh - 240px); }
         body { background-color: #1a1a1a; }
-
-        header {
-            padding-top: env(safe-area-inset-top, 16px) !important;
-            padding-bottom: 16px !important;
-        }
-
-        #input {
-            font-size: 16px !important;
-        }
+        header { padding-top: env(safe-area-inset-top, 16px) !important; padding-bottom: 16px !important; }
+        
+        /* Previne zoom no iOS */
+        #input { font-size: 16px !important; }
 
         /* Spinner de carregamento */
         .loader {
@@ -31,32 +25,49 @@
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
+        /* Ícone de envio rotacionado */
         .send-icon { transform: rotate(90deg); }
+
+        /* Animação de gravação */
+        .recording { 
+            animation: pulse 1.5s infinite; 
+            background-color: #ef4444 !important; 
+        }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
     </style>
 </head>
 <body class="h-screen flex justify-center overflow-hidden">
 
     <div class="w-full max-w-md bg-gray-100 flex flex-col shadow-2xl relative">
-        
         <header class="bg-blue-600 text-white text-center font-bold shadow-md">
             Task Helper AI
         </header>
 
         <div id="chat" class="chat-container overflow-y-auto p-4 space-y-4 flex flex-col">
-            <div class="bg-white p-3 rounded-lg shadow-sm max-w-[85%] text-sm">
-                Olá! Me mande uma lista de tarefas e eu as organizarei com o Gemini.
+            <div class="bg-white p-3 rounded-lg shadow-sm max-w-[85%] text-sm text-gray-800">
+                Olá! Digite ou <strong>segure</strong> o microfone para falar suas tarefas.
             </div>
         </div>
 
         <div class="p-4 bg-white border-t" style="padding-bottom: calc(env(safe-area-inset-bottom, 16px) + 16px);">
             <div class="flex gap-2 items-center">
+                <button id="mic-btn" 
+                    onmousedown="startRecording()" onmouseup="stopRecording()"
+                    ontouchstart="startRecording()" ontouchend="stopRecording()"
+                    class="bg-gray-200 text-gray-600 p-2.5 rounded-full transition-all flex items-center justify-center min-w-[40px] min-h-[40px]">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14c1.657 0 3-1.343 3-3V5a3 3 0 10-6 0v6c0 1.657 1.343 3 3 3z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                </button>
+
                 <input type="text" id="input" 
                     class="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" 
-                    placeholder="Digite e aperte Enter...">
+                    placeholder="Digite...">
                 
-                <button onclick="send()" id="btn" 
-                    class="bg-blue-600 text-white p-2.5 rounded-full hover:bg-blue-700 transition-all flex items-center justify-center min-w-[40px] min-h-[40px]">
-                    <svg id="send-svg" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 send-icon" viewBox="0 0 20 20" fill="currentColor">
+                <button onclick="sendText()" id="btn" 
+                    class="bg-blue-600 text-white p-2.5 rounded-full hover:bg-blue-700 flex items-center justify-center min-w-[40px] min-h-[40px]">
+                    <svg class="h-5 w-5 send-icon" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
                     </svg>
                 </button>
@@ -64,69 +75,134 @@
             
             <div class="mt-4 text-center">
                 <a href="https://www.linkedin.com/in/gabriel-chv" target="_blank" 
-                   class="text-[10px] text-gray-400 hover:text-blue-500 transition-colors uppercase tracking-widest font-semibold">
-                    Desenvolvido por Gabriel Chaves | LinkedIn
+                   class="text-[10px] text-gray-400 uppercase tracking-widest font-semibold">
+                    Gabriel Chaves | LinkedIn
                 </a>
             </div>
         </div>
     </div>
 
     <script>
+        // ATENÇÃO: Verifique se esta URL está correta após o deploy da function
         const FUNCTION_URL = "https://task-helper-662877194200.southamerica-east1.run.app";
+        
+        let mediaRecorder;
+        let audioChunks = [];
+        let startTime;
 
-        async function send() {
-            const input = document.getElementById('input');
-            const btn = document.getElementById('btn');
+        // FUNÇÃO PARA AVISOS TEMPORÁRIOS
+        function showFeedback(message) {
             const chat = document.getElementById('chat');
-            const text = input.value.trim();
-            
-            if(!text || btn.disabled) return;
+            const alertDiv = document.createElement('div');
+            alertDiv.className = "bg-yellow-100 text-yellow-800 p-2 rounded-lg self-center text-[10px] uppercase font-bold tracking-tighter mb-2";
+            alertDiv.innerText = message;
+            chat.appendChild(alertDiv);
+            chat.scrollTop = chat.scrollHeight;
+            setTimeout(() => alertDiv.remove(), 3000);
+        }
 
+        // LÓGICA DE ÁUDIO
+        async function startRecording() {
+            startTime = Date.now();
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.onstop = () => {
+                    const duration = Date.now() - startTime;
+                    if (duration < 500) {
+                        showFeedback("⚠️ Segure para gravar áudio");
+                        return;
+                    }
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    processRequest(audioBlob, true);
+                };
+                mediaRecorder.start();
+                document.getElementById('mic-btn').classList.add('recording', 'text-white');
+            } catch (err) {
+                showFeedback("❌ Permita o acesso ao microfone");
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                mediaRecorder.stop();
+                document.getElementById('mic-btn').classList.remove('recording', 'text-white');
+            }
+        }
+
+        // ENVIO DE TEXTO
+        function sendText() {
+            const input = document.getElementById('input');
+            const val = input.value.trim();
+            if (val) processRequest(val, false);
+        }
+
+        // PROCESSAMENTO (GEMINI)
+        async function processRequest(content, isAudio) {
+            const chat = document.getElementById('chat');
+            const btn = document.getElementById('btn');
+            const input = document.getElementById('input');
+            
             btn.disabled = true;
             input.disabled = true;
-            btn.innerHTML = '<div class="loader"></div>';
-
-            chat.innerHTML += `<div class="bg-blue-500 text-white p-3 rounded-lg shadow-sm self-end ml-auto max-w-[85%] text-sm">${text}</div>`;
+            
+            // UI: Mensagem do usuário
+            chat.innerHTML += `<div class="bg-blue-500 text-white p-3 rounded-lg self-end ml-auto max-w-[85%] text-sm shadow-sm">${isAudio ? '🎤 Mensagem de voz' : content}</div>`;
             input.value = "";
-            chat.scrollTop = chat.scrollHeight;
-
+            
+            // UI: Loading
             const loadingId = "loading-" + Date.now();
-            chat.innerHTML += `<div id="${loadingId}" class="bg-white p-3 rounded-lg shadow-sm max-w-[85%] text-sm text-gray-400 italic flex items-center gap-2">
+            chat.innerHTML += `<div id="${loadingId}" class="bg-white p-3 rounded-lg shadow-sm max-w-[85%] text-sm text-gray-400 italic flex items-center gap-2 border border-gray-100">
                 <div class="loader" style="width:12px; height:12px; border-width:1px;"></div> Gemini está processando...
             </div>`;
             chat.scrollTop = chat.scrollHeight;
 
+            const formData = new FormData();
+            if (isAudio) formData.append('audio', content);
+
             try {
-                const res = await fetch(FUNCTION_URL, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({text})
-                });
+                let res;
+                if (isAudio) {
+                    res = await fetch(FUNCTION_URL, { method: 'POST', body: formData });
+                } else {
+                    res = await fetch(FUNCTION_URL, { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({text: content}) 
+                    });
+                }
+                
                 const data = await res.json();
                 document.getElementById(loadingId).remove();
 
-                let reply = "✅ **Tarefas:**<br><div class='mt-2 space-y-2'>";
-                data.tasks.forEach(t => {
-                    reply += `<div class='border-l-2 border-blue-500 pl-2'>
-                                <span class='font-bold block text-gray-800'>${t.title}</span>
-                                <span class='text-xs text-gray-500'>${t.description}</span>
-                              </div>`;
-                });
+                // UI: Lista de Tarefas (Apenas Título)
+                let reply = "✅ **Tarefas extraídas:**<br><div class='mt-2 space-y-2'>";
+                if (data.tasks && data.tasks.length > 0) {
+                    data.tasks.forEach(t => {
+                        reply += `<div class='border-l-2 border-blue-500 pl-2'>
+                                    <span class='font-bold block text-gray-800'>${t.title}</span>
+                                  </div>`;
+                    });
+                } else {
+                    reply = "Não identifiquei tarefas. Tente descrever o que precisa ser feito.";
+                }
                 reply += "</div>";
 
-                chat.innerHTML += `<div class="bg-white p-3 rounded-lg shadow-sm max-w-[85%] text-sm text-gray-800">${reply}</div>`;
+                chat.innerHTML += `<div class="bg-white p-3 rounded-lg shadow-sm max-w-[85%] text-sm text-gray-800 border border-gray-100">${reply}</div>`;
             } catch (e) {
                 if(document.getElementById(loadingId)) document.getElementById(loadingId).remove();
-                chat.innerHTML += `<div class="bg-red-50 p-3 rounded-lg shadow-sm max-w-[85%] text-xs text-red-600 border border-red-100">Erro na conexão.</div>`;
+                chat.innerHTML += `<div class="bg-red-50 p-3 rounded-lg text-xs text-red-600 border border-red-100 text-center">Erro ao processar. Tente novamente.</div>`;
             } finally {
                 btn.disabled = false;
                 input.disabled = false;
-                btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 send-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>`;
+                input.focus();
                 chat.scrollTop = chat.scrollHeight;
             }
         }
 
-        document.getElementById('input').addEventListener('keypress', (e) => { if (e.key === 'Enter') send(); });
+        document.getElementById('input').addEventListener('keypress', (e) => { if (e.key === 'Enter') sendText(); });
     </script>
 </body>
 </html>
